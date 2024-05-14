@@ -1,5 +1,5 @@
-require "yaml"
-require "erb"
+require 'yaml'
+require 'erb'
 require 'open-uri'
 
 # A simple settings solution using a YAML file. See README for more information.
@@ -8,9 +8,9 @@ class Settingslogic < Hash
 
   class << self
     def name # :nodoc:
-      self.superclass != Hash && instance.key?("name") ? instance.name : super
+      superclass != Hash && instance.key?('name') ? instance.name : super
     end
-        
+
     # Enables Settings.get('nested.key.name') for dynamic access
     def get(key)
       parts = key.split('.')
@@ -55,30 +55,32 @@ class Settingslogic < Hash
     end
 
     private
-      def instance
-        return @instance if @instance
-        @instance = new
-        create_accessors!
-        @instance
-      end
 
-      def method_missing(name, *args, &block)
-        instance.send(name, *args, &block)
-      end
+    def instance
+      return @instance if @instance
 
-      # It would be great to DRY this up somehow, someday, but it's difficult because
-      # of the singleton pattern.  Basically this proxies Setting.foo to Setting.instance.foo
-      def create_accessors!
-        instance.each do |key,val|
-          create_accessor_for(key)
-        end
-      end
+      @instance = new
+      create_accessors!
+      @instance
+    end
 
-      def create_accessor_for(key)
-        return unless key.to_s =~ /^\w+$/  # could have "some-setting:" which blows up eval
-        instance_eval "def #{key}; instance.send(:#{key}); end"
-      end
+    def method_missing(name, *args, &block)
+      instance.send(name, *args, &block)
+    end
 
+    # It would be great to DRY this up somehow, someday, but it's difficult because
+    # of the singleton pattern.  Basically this proxies Setting.foo to Setting.instance.foo
+    def create_accessors!
+      instance.each do |key, _val|
+        create_accessor_for(key)
+      end
+    end
+
+    def create_accessor_for(key)
+      return unless key.to_s =~ /^\w+$/ # could have "some-setting:" which blows up eval
+
+      instance_eval "def #{key}; instance.send(:#{key}); end", __FILE__, __LINE__
+    end
   end
 
   # Initializes a new settings object. You can initialize an object in any of the following ways:
@@ -92,29 +94,31 @@ class Settingslogic < Hash
   # if you are using this in rails. If you pass a string it should be an absolute path to your settings file.
   # Then you can pass a hash, and it just allows you to access the hash via methods.
   def initialize(hash_or_file = self.class.source, section = nil)
-    #puts "new! #{hash_or_file}"
+    # puts "new! #{hash_or_file}"
     case hash_or_file
     when nil
-      raise Errno::ENOENT, "No file specified as Settingslogic source"
+      raise Errno::ENOENT, 'No file specified as Settingslogic source'
     when Hash
-      self.replace hash_or_file
+      replace hash_or_file
     else
       file_contents = open(hash_or_file).read
-      hash = file_contents.empty? ? {} : YAML.load(ERB.new(file_contents).result).to_hash
+      hash = file_contents.empty? ? {} : YAML.safe_load(ERB.new(file_contents).result, aliases: true).to_hash
       if self.class.namespace
         hash = hash[self.class.namespace] or return missing_key("Missing setting '#{self.class.namespace}' in #{hash_or_file}")
       end
-      self.replace hash
+
+      replace hash
     end
-    @section = section || self.class.source  # so end of error says "in application.yml"
+    @section = section || self.class.source # so end of error says "in application.yml"
     create_accessors!
   end
 
   # Called for dynamically-defined keys, and also the first key deferenced at the top-level, if load! is not used.
   # Otherwise, create_accessors! (called by new) will have created actual methods for each key.
-  def method_missing(name, *args, &block)
+  def method_missing(name, *_args)
     key = name.to_s
     return missing_key("Missing setting '#{key}' in #{@section}") unless has_key? key
+
     value = fetch(key)
     create_accessor_for(key)
     value.is_a?(Hash) ? self.class.new(value, "'#{key}' section in #{@section}") : value
@@ -124,7 +128,7 @@ class Settingslogic < Hash
     fetch(key.to_s, nil)
   end
 
-  def []=(key,val)
+  def []=(key, val)
     # Setting[:key][:key2] = 'value' for dynamic settings
     val = self.class.new(val, @section) if val.is_a? Hash
     store(key.to_s, val)
@@ -141,7 +145,7 @@ class Settingslogic < Hash
   # settings!  So settings.deploy_to title actually calls Object.deploy_to (from set :deploy_to, "host"),
   # rather than the app_yml['deploy_to'] hash.  Jeezus.
   def create_accessors!
-    self.each do |key,val|
+    each do |key, _val|
       create_accessor_for(key)
     end
   end
@@ -149,10 +153,11 @@ class Settingslogic < Hash
   # Use instance_eval/class_eval because they're actually more efficient than define_method{}
   # http://stackoverflow.com/questions/185947/ruby-definemethod-vs-def
   # http://bmorearty.wordpress.com/2009/01/09/fun-with-rubys-instance_eval-and-class_eval/
-  def create_accessor_for(key, val=nil)
-    return unless key.to_s =~ /^\w+$/  # could have "some-setting:" which blows up eval
+  def create_accessor_for(key, val = nil)
+    return unless key.to_s =~ /^\w+$/ # could have "some-setting:" which blows up eval
+
     instance_variable_set("@#{key}", val)
-    self.class.class_eval <<-EndEval
+    self.class.class_eval <<-ENDEVAL, __FILE__, __LINE__ + 1
       def #{key}
         return @#{key} if @#{key}
         return missing_key("Missing setting '#{key}' in #{@section}") unless has_key? '#{key}'
@@ -165,24 +170,23 @@ class Settingslogic < Hash
           value
         end
       end
-    EndEval
+    ENDEVAL
   end
-  
+
   def symbolize_keys
-    
-    inject({}) do |memo, tuple|
-      
-      k = (tuple.first.to_sym rescue tuple.first) || tuple.first
-            
+    each_with_object({}) do |tuple, memo|
+      k = begin
+        tuple.first.to_sym
+      rescue StandardError
+        tuple.first
+      end || tuple.first
+
       v = k.is_a?(Symbol) ? send(k) : tuple.last # make sure the value is accessed the same way Settings.foo.bar works
-      
-      memo[k] = v && v.respond_to?(:symbolize_keys) ? v.symbolize_keys : v #recurse for nested hashes
-      
-      memo
+
+      memo[k] = v && v.respond_to?(:symbolize_keys) ? v.symbolize_keys : v # recurse for nested hashes
     end
-    
   end
-  
+
   def missing_key(msg)
     return nil if self.class.suppress_errors
 
